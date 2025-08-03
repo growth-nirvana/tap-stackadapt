@@ -1,0 +1,69 @@
+version: 1
+send_anonymous_usage_stats: true
+project_id: "tap-stackadapt"
+default_environment: test
+venv:
+  backend: uv
+environments:
+- name: test
+plugins:
+  extractors:
+  - name: "tap-stackadapt"
+    namespace: "tap_stackadapt"
+    pip_url: -e .
+    capabilities:
+    - state
+    - catalog
+    - discover
+    - about
+    - stream-maps
+
+    # StackAdapt API configuration
+    settings:
+    - name: api_key
+      kind: password
+      label: API Key
+      description: The API key to authenticate against StackAdapt API
+      sensitive: true
+
+    - name: chunk_days
+      kind: integer
+      label: Chunk Days
+      description: "Number of days to chunk device stats queries (default: 1 for daily granularity)"
+      value: 1
+
+    - name: lookback_days
+      kind: integer
+      label: Lookback Days
+      description: Number of days to look back from current date if no start_date is provided
+      value: 30
+
+    - name: start_date
+      kind: date_iso8601
+      label: Start Date
+      description: Initial date to start extracting data from
+
+    - name: user_agent
+      label: User Agent
+      description: Custom User-Agent header for requests
+
+    # Required settings
+    settings_group_validation:
+    - [api_key]
+
+    # Default configuration values
+    config:
+      api_url: "https://api.stackadapt.com/service/v2"
+      chunk_days: 1
+      lookback_days: 30
+      start_date: '2025-07-01T00:00:00Z'
+      # api_key: 'YOUR_API_KEY_HERE'  # Set this via meltano config
+    select:
+    - advertisers.*
+    - campaigns.*
+    - campaign_device_stats.*
+
+  loaders:
+  - name: target-jsonl
+    variant: andyh1203
+    pip_url: target-jsonl
