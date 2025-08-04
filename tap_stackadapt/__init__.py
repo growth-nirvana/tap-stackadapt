@@ -9,10 +9,14 @@ from tap_stackadapt.streams import (
     CampaignsStream,
     AdvertisersStream,
     CampaignDeviceStatsStream,
+    CampaignDeliveryStatsStream,
+    CampaignConversionTrackerDeliveryStatsStream,
 )
 
 __all__ = [
     "CampaignsStream",
     "AdvertisersStream", 
     "CampaignDeviceStatsStream",
+    "CampaignDeliveryStatsStream",
+    "CampaignConversionTrackerDeliveryStatsStream",
 ]

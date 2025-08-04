@@ -61,6 +61,8 @@ plugins:
     - advertisers.*
     - campaigns.*
     - campaign_device_stats.*
+    - campaign_delivery_stats.*
+    - campaign_conversion_tracker_delivery_stats.*
 
   loaders:
   - name: target-jsonl
