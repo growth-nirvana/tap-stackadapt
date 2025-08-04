@@ -9,6 +9,7 @@ from importlib import resources
 from singer_sdk import typing as th  # JSON Schema typing helpers
 from singer_sdk.pagination import BaseAPIPaginator
 
+from tap_stackadapt import RUN_ID
 from tap_stackadapt.client import StackadaptStream
 
 # TODO: Delete this is if not using json files for schema definition
@@ -51,6 +52,7 @@ class CampaignsStream(StackadaptStream):
         ), description="Campaign status"),
         th.Property("created_at", th.DateTimeType, description="Creation timestamp"),
         th.Property("updated_at", th.DateTimeType, description="Last update timestamp"),
+        th.Property("run_id", th.IntegerType, description="Extraction run ID"),
     ).to_dict()
 
     def get_new_paginator(self) -> BaseAPIPaginator:
@@ -68,6 +70,15 @@ class CampaignsStream(StackadaptStream):
             self.logger.error(f"Response headers: {response.headers}")
             self.logger.error(f"Response text: {response.text[:500]}")  # First 500 chars
             raise
+
+    def post_process(
+        self,
+        row: dict,
+        context: t.Any | None = None,  # noqa: ARG002
+    ) -> dict | None:
+        """Add run_id to each record."""
+        row["run_id"] = RUN_ID
+        return row
 
 
 class AdvertisersStream(StackadaptStream):
@@ -87,6 +98,7 @@ class AdvertisersStream(StackadaptStream):
         ), description="Advertiser status"),
         th.Property("created_at", th.DateTimeType, description="Creation timestamp"),
         th.Property("updated_at", th.DateTimeType, description="Last update timestamp"),
+        th.Property("run_id", th.IntegerType, description="Extraction run ID"),
     ).to_dict()
 
     def get_new_paginator(self) -> BaseAPIPaginator:
@@ -104,6 +116,15 @@ class AdvertisersStream(StackadaptStream):
             self.logger.error(f"Response headers: {response.headers}")
             self.logger.error(f"Response text: {response.text[:500]}")  # First 500 chars
             raise
+
+    def post_process(
+        self,
+        row: dict,
+        context: t.Any | None = None,  # noqa: ARG002
+    ) -> dict | None:
+        """Add run_id to each record."""
+        row["run_id"] = RUN_ID
+        return row
 
 
 class CampaignDeviceStatsStream(StackadaptStream):
@@ -181,6 +202,7 @@ class CampaignDeviceStatsStream(StackadaptStream):
         th.Property("ecpm", th.NumberType, description="Effective cost per mille"),
         th.Property("ecpv", th.NumberType, description="Effective cost per view"),
         th.Property("engage_rate", th.NumberType, description="Engagement rate"),
+        th.Property("run_id", th.IntegerType, description="Extraction run ID"),
     ).to_dict()
 
     def get_url_params(
@@ -279,3 +301,12 @@ class CampaignDeviceStatsStream(StackadaptStream):
             
             # Move to next chunk
             current_date = chunk_end_date + timedelta(days=1)
+
+    def post_process(
+        self,
+        row: dict,
+        context: t.Any | None = None,  # noqa: ARG002
+    ) -> dict | None:
+        """Add run_id to each record."""
+        row["run_id"] = RUN_ID
+        return row

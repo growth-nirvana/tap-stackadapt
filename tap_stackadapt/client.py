@@ -31,8 +31,8 @@ class StackadaptStream(RESTStream):
 
     @property
     def url_base(self) -> str:
-        """Return the API URL root, configurable via tap settings."""
-        return self.config.get("api_url", "https://api.stackadapt.com")
+        """Return the API URL root."""
+        return "https://api.stackadapt.com/service/v2"
 
     @property
     def authenticator(self) -> APIKeyAuthenticator:
