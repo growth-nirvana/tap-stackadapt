@@ -53,7 +53,6 @@ plugins:
 
     # Default configuration values
     config:
-      api_url: "https://api.stackadapt.com/service/v2"
       chunk_days: 1
       lookback_days: 30
       start_date: '2025-07-01T00:00:00Z'
