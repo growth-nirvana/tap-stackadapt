@@ -19,16 +19,17 @@ SCHEMAS_DIR = resources.files(__package__) / "schemas"
 class StackAdaptPaginator(BaseAPIPaginator):
     """Paginator for StackAdapt API responses."""
     
-    def __init__(self, start_value: int = 1):
+    def __init__(self, start_value: int = 1, page_size: int = 100):
         super().__init__(start_value)
         self._page = start_value
+        self._page_size = page_size
     
     def get_next(self, response):
         """Get the next page token from the response."""
         data = response.json()
         total_items = data.get("total_campaigns", data.get("total_advertisers", 0))
         current_page = data.get("page", 1)
-        page_size = 100  # Assuming 100 items per page
+        page_size = self._page_size
         
         if (total_items / page_size) > current_page:
             return current_page + 1
@@ -69,7 +70,22 @@ class CampaignsStream(StackadaptStream):
 
     def get_new_paginator(self) -> BaseAPIPaginator:
         """Create a new pagination helper instance."""
-        return StackAdaptPaginator()
+        return StackAdaptPaginator(page_size=30)
+
+    def get_url_params(
+        self,
+        context: t.Any | None,
+        next_page_token: t.Any | None,
+    ) -> dict[str, t.Any]:
+        """Return a dictionary of values to be used in URL parameterization."""
+        params: dict = {}
+        params["page_size"] = 30  # Set page size to 30 for campaigns
+        if next_page_token:
+            params["page"] = next_page_token
+        if self.replication_key:
+            params["sort"] = "asc"
+            params["order_by"] = self.replication_key
+        return params
 
     def parse_response(self, response):
         """Parse the response and return an iterator of result records."""
@@ -779,6 +795,202 @@ class CampaignConversionTrackerDeliveryStatsStream(StackadaptStream):
                         except Exception as e:
                             self.logger.warning(f"Error fetching delivery stats for campaign {campaign_id} tracker {tracker_id} page {page}: {e}")
                             break
+            
+            # Move to next chunk
+            current_date = chunk_end_date + timedelta(days=1)
+
+    def post_process(
+        self,
+        row: dict,
+        context: t.Any | None = None,  # noqa: ARG002
+    ) -> dict | None:
+        """Add run_id to each record."""
+        row["run_id"] = RUN_ID
+        return row
+
+
+class ConversionTrackerStatsStream(StackadaptStream):
+    """Conversion tracker statistics stream for StackAdapt.
+    
+    This stream queries conversion tracker stats directly using resource_type=conversion_tracker.
+    Unlike CampaignConversionTrackerDeliveryStatsStream, this returns accurate per-tracker data.
+    """
+
+    name = "conversion_tracker_stats"
+    path = "/delivery"
+    primary_keys: t.ClassVar[list[str]] = ["conversion_tracker_id", "date"]
+    replication_key = "date"
+    
+    schema = th.PropertiesList(
+        # Primary keys
+        th.Property("conversion_tracker_id", th.IntegerType, description="Conversion tracker ID"),
+        th.Property("date", th.DateType, description="Date of the statistics"),
+        
+        # Tracker context
+        th.Property("conversion_tracker_name", th.StringType, description="Conversion tracker name"),
+        th.Property("conversion_tracker_description", th.StringType, description="Conversion tracker description"),
+        
+        # Basic metrics (often zero for tracker-level queries)
+        th.Property("imp", th.IntegerType, description="Impressions"),
+        th.Property("click", th.IntegerType, description="Clicks"),
+        th.Property("cost", th.NumberType, description="Cost"),
+        th.Property("revenue", th.NumberType, description="Revenue"),
+        
+        # Conversion metrics
+        th.Property("conv", th.IntegerType, description="Conversions"),
+        th.Property("s_conv", th.IntegerType, description="Server-side conversions"),
+        th.Property("sconv_click", th.IntegerType, description="Server-side click conversions"),
+        th.Property("sconv_imp", th.IntegerType, description="Server-side impression conversions"),
+        th.Property("uniq_conv", th.IntegerType, description="Unique conversions"),
+        
+        # Time metrics
+        th.Property("atos", th.NumberType, description="Average time on site"),
+        th.Property("atos_units", th.IntegerType, description="Time on site units"),
+        th.Property("page_time", th.IntegerType, description="Page time"),
+        th.Property("page_time_units", th.IntegerType, description="Page time units"),
+        
+        # Calculated metrics
+        th.Property("ctr", th.NumberType, description="Click-through rate"),
+        th.Property("cvr", th.NumberType, description="Conversion rate"),
+        th.Property("click_cvr", th.NumberType, description="Click conversion rate"),
+        th.Property("ecpa", th.NumberType, description="Effective cost per acquisition"),
+        th.Property("ecpc", th.NumberType, description="Effective cost per click"),
+        th.Property("ecpcl", th.NumberType, description="Effective cost per click landing"),
+        th.Property("ecpe", th.NumberType, description="Effective cost per engagement"),
+        th.Property("ecpm", th.NumberType, description="Effective cost per mille"),
+        th.Property("ecpv", th.NumberType, description="Effective cost per view"),
+        th.Property("ltr", th.NumberType, description="Landing to registration rate"),
+        th.Property("profit", th.NumberType, description="Profit"),
+        th.Property("rcpa", th.NumberType, description="Revenue cost per acquisition"),
+        th.Property("rcpc", th.NumberType, description="Revenue cost per click"),
+        th.Property("rcpcl", th.NumberType, description="Revenue cost per click landing"),
+        th.Property("rcpe", th.NumberType, description="Revenue cost per engagement"),
+        th.Property("rcpm", th.NumberType, description="Revenue cost per mille"),
+        th.Property("rcpv", th.NumberType, description="Revenue cost per view"),
+        th.Property("tp_cpc_cost", th.NumberType, description="Third-party CPC cost"),
+        th.Property("tp_cpm_cost", th.NumberType, description="Third-party CPM cost"),
+        th.Property("run_id", th.IntegerType, description="Extraction run ID"),
+    ).to_dict()
+
+    def get_url_params(
+        self,
+        context: t.Any | None,
+        next_page_token: t.Any | None,
+    ) -> dict[str, t.Any]:
+        """Return a dictionary of values to be used in URL parameterization."""
+        params = {}
+        
+        if context and context.get("conversion_tracker_id") and context.get("start_date") and context.get("end_date"):
+            params.update({
+                "resource_type": "conversion_tracker",  # Query by tracker, not campaign
+                "type": "daily",
+                "id": context["conversion_tracker_id"],  # Tracker ID goes in 'id' param
+                "date_range_type": "custom",
+                "start_date": context["start_date"],
+                "end_date": context["end_date"]
+            })
+            
+            # Add pagination
+            if next_page_token:
+                params["page"] = next_page_token
+        
+        return params
+
+    def get_records(self, context: t.Any | None) -> t.Iterable[dict[str, t.Any]]:
+        """Get records from the stream."""
+        # First, get all campaigns to find their conversion trackers
+        campaigns_stream = CampaignsStream(self._tap)
+        
+        # Get chunk days from config (default to 1 for daily granularity)
+        chunk_days = self.config.get("chunk_days", 1)
+        
+        # Get lookback days from config (default to 30 days)
+        lookback_days = self.config.get("lookback_days", 30)
+        
+        # Get start date from config or use lookback window
+        start_date_str = self.config.get("start_date")
+        if start_date_str:
+            start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+            # Convert to timezone-naive datetime
+            if start_date.tzinfo:
+                start_date = start_date.replace(tzinfo=None)
+        else:
+            # Use lookback window if no start_date provided
+            start_date = datetime.now().replace(tzinfo=None) - timedelta(days=lookback_days)
+        
+        end_date = datetime.now().replace(tzinfo=None)
+        
+        # Generate date chunks
+        current_date = start_date
+        while current_date <= end_date:
+            chunk_end_date = min(current_date + timedelta(days=chunk_days - 1), end_date)
+            
+            # For each campaign, get its conversion trackers and fetch stats
+            for campaign in campaigns_stream.get_records(context):
+                campaign_id = campaign.get("id")
+                if not campaign_id:
+                    continue
+                
+                # Get conversion trackers for this campaign
+                conversion_trackers = campaign.get("conversion_trackers", [])
+                if not conversion_trackers:
+                    # Skip campaigns without conversion trackers
+                    continue
+                
+                # For each conversion tracker, fetch stats
+                for tracker in conversion_trackers:
+                    tracker_id = tracker.get("id")
+                    if not tracker_id:
+                        continue
+                    
+                    # Create context for this tracker and date range
+                    tracker_context = {
+                        "conversion_tracker_id": tracker_id,
+                        "start_date": current_date.strftime("%Y-%m-%d"),
+                        "end_date": chunk_end_date.strftime("%Y-%m-%d"),
+                    }
+                    
+                    # Fetch stats for this tracker and date range
+                    try:
+                        # Get authentication headers
+                        auth_headers = self.authenticator.auth_headers or {}
+                        
+                        # Merge with other headers
+                        headers = {**self.http_headers, **auth_headers}
+                        
+                        response = self.requests_session.get(
+                            self.get_url(context=tracker_context),
+                            headers=headers,
+                            params=self.get_url_params(tracker_context, None),
+                        )
+                        response.raise_for_status()
+                        
+                        stats_data = response.json().get("stats", [])
+                        
+                        # Process each day's stats
+                        for day_stats in stats_data:
+                            # Add tracker context to each record
+                            day_stats["conversion_tracker_id"] = tracker_id
+                            day_stats["conversion_tracker_name"] = tracker.get("name", "")
+                            day_stats["conversion_tracker_description"] = tracker.get("description", "")
+                            
+                            # Validate date is within range
+                            stat_date = day_stats.get("date", "")
+                            if stat_date:
+                                try:
+                                    stat_dt = datetime.strptime(stat_date, '%Y-%m-%d')
+                                    start_dt = datetime.strptime(tracker_context["start_date"], '%Y-%m-%d')
+                                    end_dt = datetime.strptime(tracker_context["end_date"], '%Y-%m-%d')
+                                    
+                                    if start_dt <= stat_dt <= end_dt:
+                                        yield day_stats
+                                except ValueError:
+                                    # Skip invalid dates
+                                    continue
+                                    
+                    except Exception as e:
+                        self.logger.warning(f"Error fetching stats for tracker {tracker_id}: {e}")
+                        continue
             
             # Move to next chunk
             current_date = chunk_end_date + timedelta(days=1)
