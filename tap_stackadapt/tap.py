@@ -72,6 +72,7 @@ class TapStackadapt(Tap):
             streams.CampaignDeviceStatsStream(self),
             streams.CampaignDeliveryStatsStream(self),
             streams.CampaignConversionTrackerDeliveryStatsStream(self),
+            streams.ConversionTrackerStatsStream(self),
         ]
 
 
