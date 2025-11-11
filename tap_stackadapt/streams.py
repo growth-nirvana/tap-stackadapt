@@ -501,7 +501,9 @@ class CampaignDeliveryStatsStream(StackadaptStream):
                         )
                         response.raise_for_status()
                         
-                        stats_data = response.json().get("stats", [])
+                        stats_data = response.json().get("stats")
+                        if not stats_data:
+                            stats_data = []
                         
                         if not stats_data:
                             # No more data on this page
@@ -703,7 +705,7 @@ class CampaignConversionTrackerDeliveryStatsStream(StackadaptStream):
                     continue
                 
                 # Get conversion trackers for this campaign
-                conversion_trackers = campaign.get("conversion_trackers", [])
+                conversion_trackers = campaign.get("conversion_trackers") or []
                 if not conversion_trackers:
                     # Skip campaigns without conversion trackers
                     continue
@@ -932,7 +934,7 @@ class ConversionTrackerStatsStream(StackadaptStream):
                     continue
                 
                 # Get conversion trackers for this campaign
-                conversion_trackers = campaign.get("conversion_trackers", [])
+                conversion_trackers = campaign.get("conversion_trackers") or []
                 if not conversion_trackers:
                     # Skip campaigns without conversion trackers
                     continue
@@ -965,7 +967,9 @@ class ConversionTrackerStatsStream(StackadaptStream):
                         )
                         response.raise_for_status()
                         
-                        stats_data = response.json().get("stats", [])
+                        stats_data = response.json().get("stats")
+                        if not stats_data:
+                            stats_data = []
                         
                         # Process each day's stats
                         for day_stats in stats_data:
