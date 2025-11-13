@@ -40,8 +40,8 @@ class TapStackadapt(Tap):
             "chunk_days",
             th.IntegerType(nullable=False),
             title="Chunk Days",
-            default=1,
-            description="Number of days to chunk device stats queries (default: 1 for daily granularity)",
+            default=0,
+            description="Number of days per request when chunking stats queries (0 to request the entire range)",
         ),
         th.Property(
             "lookback_days",

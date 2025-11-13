@@ -259,7 +259,7 @@ class CampaignDeviceStatsStream(StackadaptStream):
         campaigns_stream = CampaignsStream(self._tap)
         
         # Get chunk days from config (default to 1 for daily granularity)
-        chunk_days = self.config.get("chunk_days", 1)
+        chunk_days = self.config.get("chunk_days", 0)
         
         # Get lookback days from config (default to 30 days)
         lookback_days = self.config.get("lookback_days", 30)
@@ -443,7 +443,7 @@ class CampaignDeliveryStatsStream(StackadaptStream):
         campaigns_stream = CampaignsStream(self._tap)
         
         # Get chunk days from config (default to 1 for daily granularity)
-        chunk_days = self.config.get("chunk_days", 1)
+        chunk_days = self.config.get("chunk_days", 0)
         
         # Get lookback days from config (default to 30 days)
         lookback_days = self.config.get("lookback_days", 30)
@@ -461,10 +461,19 @@ class CampaignDeliveryStatsStream(StackadaptStream):
         
         end_date = datetime.now().replace(tzinfo=None)
         
-        # Generate date chunks
-        current_date = start_date
-        while current_date <= end_date:
-            chunk_end_date = min(current_date + timedelta(days=chunk_days - 1), end_date)
+        def iter_date_ranges():
+            if chunk_days and chunk_days > 0:
+                current = start_date
+                while current <= end_date:
+                    chunk_end = min(current + timedelta(days=chunk_days - 1), end_date)
+                    yield current, chunk_end
+                    current = chunk_end + timedelta(days=1)
+            else:
+                yield start_date, end_date
+
+        for range_start, range_end in iter_date_ranges():
+            start_str = range_start.strftime("%Y-%m-%d")
+            end_str = range_end.strftime("%Y-%m-%d")
             
             # For each campaign, fetch delivery stats for this date range
             for campaign in campaigns_stream.get_records(context):
@@ -472,26 +481,19 @@ class CampaignDeliveryStatsStream(StackadaptStream):
                 if not campaign_id:
                     continue
                 
-                # Create context for this campaign and date range
                 campaign_context = {
                     "campaign_id": campaign_id,
-                    "start_date": current_date.strftime("%Y-%m-%d"),
-                    "end_date": chunk_end_date.strftime("%Y-%m-%d"),
+                    "start_date": start_str,
+                    "end_date": end_str,
                 }
                 
-                # Fetch delivery stats for this campaign and date range with pagination
                 page = 1
-                seen_dates = set()  # Track seen dates to avoid duplicates
+                seen_dates = set()
                 
                 while True:
                     try:
-                        # Get authentication headers
                         auth_headers = self.authenticator.auth_headers or {}
-                        
-                        # Merge with other headers
                         headers = {**self.http_headers, **auth_headers}
-                        
-                        # Add page parameter to context
                         page_context = {**campaign_context, "page": page}
                         
                         response = self.requests_session.get(
@@ -501,59 +503,60 @@ class CampaignDeliveryStatsStream(StackadaptStream):
                         )
                         response.raise_for_status()
                         
-                        stats_data = response.json().get("stats")
-                        if not stats_data:
-                            stats_data = []
+                        data = response.json()
+                        stats_data = data.get("stats") or []
                         
                         if not stats_data:
-                            # No more data on this page
                             break
                         
-                        # Process each day's stats
                         new_stats = []
                         for day_stats in stats_data:
-                            # Add campaign context to each record
                             day_stats["campaign_id"] = campaign_id
                             day_stats["campaign"] = campaign.get("name", "")
                             
-                            # Check if we've seen this date before
                             stat_date = day_stats.get("date", "")
-                            if stat_date and stat_date not in seen_dates:
-                                # Check if date is within requested range
-                                try:
-                                    stat_dt = datetime.strptime(stat_date, '%Y-%m-%d')
-                                    start_dt = datetime.strptime(campaign_context["start_date"], '%Y-%m-%d')
-                                    end_dt = datetime.strptime(campaign_context["end_date"], '%Y-%m-%d')
-                                    
-                                    if start_dt <= stat_dt <= end_dt:
-                                        new_stats.append(day_stats)
-                                        seen_dates.add(stat_date)
-                                except ValueError:
-                                    # Skip invalid dates
-                                    continue
+                            if not stat_date or stat_date in seen_dates:
+                                continue
+                            
+                            try:
+                                stat_dt = datetime.strptime(stat_date, "%Y-%m-%d")
+                                if range_start <= stat_dt <= range_end:
+                                    new_stats.append(day_stats)
+                                    seen_dates.add(stat_date)
+                            except ValueError:
+                                continue
                         
-                        # Yield new stats
                         for stat in new_stats:
                             yield stat
                         
-                        # Check if we should continue pagination
-                        # If we got fewer records than expected, or no new records, stop
-                        if len(stats_data) < 20 or not new_stats:  # Assuming page size is around 20
+                        pagination = data.get("pagination") or {}
+                        next_page = pagination.get("next_page") or pagination.get("nextPage")
+                        has_next = pagination.get("has_next") or pagination.get("has_next_page")
+                        total_pages = pagination.get("total_pages") or pagination.get("totalPages")
+                        current_page = pagination.get("page") or pagination.get("current_page") or page
+                        
+                        if next_page:
+                            page = next_page
+                        elif has_next:
+                            page = current_page + 1
+                        elif total_pages and current_page < total_pages:
+                            page = current_page + 1
+                        else:
                             break
                         
-                        page += 1
-                        
-                        # Safety check to prevent infinite loops
-                        if page > 50:
-                            self.logger.warning(f"Reached maximum page limit (50) for campaign {campaign_id}")
+                        if page > 500:
+                            self.logger.warning(
+                                "Reached maximum page limit (500) for campaign %s", campaign_id
+                            )
                             break
-                            
                     except Exception as e:
-                        self.logger.warning(f"Error fetching delivery stats for campaign {campaign_id} page {page}: {e}")
+                        self.logger.warning(
+                            "Error fetching delivery stats for campaign %s page %s: %s",
+                            campaign_id,
+                            page,
+                            e,
+                        )
                         break
-            
-            # Move to next chunk
-            current_date = chunk_end_date + timedelta(days=1)
 
     def post_process(
         self,
@@ -674,8 +677,8 @@ class CampaignConversionTrackerDeliveryStatsStream(StackadaptStream):
         # First, get all campaigns
         campaigns_stream = CampaignsStream(self._tap)
         
-        # Get chunk days from config (default to 1 for daily granularity)
-        chunk_days = self.config.get("chunk_days", 1)
+        # Get chunk days from config (0 means use entire range)
+        chunk_days = self.config.get("chunk_days", 0)
         
         # Get lookback days from config (default to 30 days)
         lookback_days = self.config.get("lookback_days", 30)
@@ -720,8 +723,8 @@ class CampaignConversionTrackerDeliveryStatsStream(StackadaptStream):
                     campaign_context = {
                         "campaign_id": campaign_id,
                         "conversion_tracker_id": tracker_id,
-                        "start_date": current_date.strftime("%Y-%m-%d"),
-                        "end_date": chunk_end_date.strftime("%Y-%m-%d"),
+                        "start_date": range_start.strftime("%Y-%m-%d"),
+                        "end_date": range_end.strftime("%Y-%m-%d"),
                     }
                     
                     # Fetch delivery stats for this campaign, tracker, and date range with pagination
@@ -798,8 +801,7 @@ class CampaignConversionTrackerDeliveryStatsStream(StackadaptStream):
                             self.logger.warning(f"Error fetching delivery stats for campaign {campaign_id} tracker {tracker_id} page {page}: {e}")
                             break
             
-            # Move to next chunk
-            current_date = chunk_end_date + timedelta(days=1)
+        # No explicit return needed; generator completes after ranges processed
 
     def post_process(
         self,
@@ -922,10 +924,19 @@ class ConversionTrackerStatsStream(StackadaptStream):
         
         end_date = datetime.now().replace(tzinfo=None)
         
-        # Generate date chunks
-        current_date = start_date
-        while current_date <= end_date:
-            chunk_end_date = min(current_date + timedelta(days=chunk_days - 1), end_date)
+        def iter_date_ranges():
+            if chunk_days and chunk_days > 0:
+                current = start_date
+                while current <= end_date:
+                    chunk_end = min(current + timedelta(days=chunk_days - 1), end_date)
+                    yield current, chunk_end
+                    current = chunk_end + timedelta(days=1)
+            else:
+                yield start_date, end_date
+
+        for range_start, range_end in iter_date_ranges():
+            start_str = range_start.strftime("%Y-%m-%d")
+            end_str = range_end.strftime("%Y-%m-%d")
             
             # For each campaign, get its conversion trackers and fetch stats
             for campaign in campaigns_stream.get_records(context):
@@ -933,71 +944,81 @@ class ConversionTrackerStatsStream(StackadaptStream):
                 if not campaign_id:
                     continue
                 
-                # Get conversion trackers for this campaign
                 conversion_trackers = campaign.get("conversion_trackers") or []
                 if not conversion_trackers:
-                    # Skip campaigns without conversion trackers
                     continue
                 
-                # For each conversion tracker, fetch stats
                 for tracker in conversion_trackers:
                     tracker_id = tracker.get("id")
                     if not tracker_id:
                         continue
                     
-                    # Create context for this tracker and date range
                     tracker_context = {
                         "conversion_tracker_id": tracker_id,
-                        "start_date": current_date.strftime("%Y-%m-%d"),
-                        "end_date": chunk_end_date.strftime("%Y-%m-%d"),
+                        "start_date": start_str,
+                        "end_date": end_str,
                     }
                     
-                    # Fetch stats for this tracker and date range
                     try:
-                        # Get authentication headers
                         auth_headers = self.authenticator.auth_headers or {}
-                        
-                        # Merge with other headers
                         headers = {**self.http_headers, **auth_headers}
                         
-                        response = self.requests_session.get(
-                            self.get_url(context=tracker_context),
-                            headers=headers,
-                            params=self.get_url_params(tracker_context, None),
-                        )
-                        response.raise_for_status()
-                        
-                        stats_data = response.json().get("stats")
-                        if not stats_data:
-                            stats_data = []
-                        
-                        # Process each day's stats
-                        for day_stats in stats_data:
-                            # Add tracker context to each record
-                            day_stats["conversion_tracker_id"] = tracker_id
-                            day_stats["conversion_tracker_name"] = tracker.get("name", "")
-                            day_stats["conversion_tracker_description"] = tracker.get("description", "")
+                        page = 1
+                        while True:
+                            response = self.requests_session.get(
+                                self.get_url(context=tracker_context),
+                                headers=headers,
+                                params=self.get_url_params(tracker_context, page),
+                            )
+                            response.raise_for_status()
                             
-                            # Validate date is within range
-                            stat_date = day_stats.get("date", "")
-                            if stat_date:
+                            data = response.json()
+                            stats_data = data.get("stats") or []
+                            
+                            if not stats_data:
+                                break
+                            
+                            for day_stats in stats_data:
+                                day_stats["conversion_tracker_id"] = tracker_id
+                                day_stats["conversion_tracker_name"] = tracker.get("name", "")
+                                day_stats["conversion_tracker_description"] = tracker.get("description", "")
+                                
+                                stat_date = day_stats.get("date", "")
+                                if not stat_date:
+                                    continue
+                                
                                 try:
-                                    stat_dt = datetime.strptime(stat_date, '%Y-%m-%d')
-                                    start_dt = datetime.strptime(tracker_context["start_date"], '%Y-%m-%d')
-                                    end_dt = datetime.strptime(tracker_context["end_date"], '%Y-%m-%d')
-                                    
-                                    if start_dt <= stat_dt <= end_dt:
+                                    stat_dt = datetime.strptime(stat_date, "%Y-%m-%d")
+                                    if range_start <= stat_dt <= range_end:
                                         yield day_stats
                                 except ValueError:
-                                    # Skip invalid dates
                                     continue
-                                    
+                            
+                            pagination = data.get("pagination") or {}
+                            next_page = pagination.get("next_page") or pagination.get("nextPage")
+                            has_next = pagination.get("has_next") or pagination.get("has_next_page")
+                            total_pages = pagination.get("total_pages") or pagination.get("totalPages")
+                            current_page = pagination.get("page") or pagination.get("current_page") or page
+                            
+                            if next_page:
+                                page = next_page
+                            elif has_next:
+                                page = current_page + 1
+                            elif total_pages and current_page < total_pages:
+                                page = current_page + 1
+                            else:
+                                break
+                            
+                            if page > 500:
+                                self.logger.warning(
+                                    "Reached maximum page limit (500) for tracker %s", tracker_id
+                                )
+                                break
                     except Exception as e:
                         self.logger.warning(f"Error fetching stats for tracker {tracker_id}: {e}")
                         continue
-            
-            # Move to next chunk
-            current_date = chunk_end_date + timedelta(days=1)
+
+        # No explicit return needed; generator completes after ranges processed
 
     def post_process(
         self,
