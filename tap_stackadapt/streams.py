@@ -258,9 +258,6 @@ class CampaignDeviceStatsStream(StackadaptStream):
         # First, get all campaigns
         campaigns_stream = CampaignsStream(self._tap)
         
-        # Get chunk days from config (default to 1 for daily granularity)
-        chunk_days = self.config.get("chunk_days", 0)
-        
         # Get lookback days from config (default to 30 days)
         lookback_days = self.config.get("lookback_days", 30)
         
@@ -277,11 +274,14 @@ class CampaignDeviceStatsStream(StackadaptStream):
         
         end_date = datetime.now().replace(tzinfo=None)
         
-        # Generate date chunks
-        current_date = start_date
-        while current_date <= end_date:
-            chunk_end_date = min(current_date + timedelta(days=chunk_days - 1), end_date)
-            
+        # Always use 1-day chunks for device stats (daily granularity required)
+        def iter_date_ranges():
+            current = start_date
+            while current <= end_date:
+                yield current, current  # Same start and end date = single day
+                current = current + timedelta(days=1)
+        
+        for current_date, chunk_end_date in iter_date_ranges():
             # For each campaign, fetch device stats for this date range
             for campaign in campaigns_stream.get_records(context):
                 campaign_id = campaign.get("id")
@@ -326,9 +326,6 @@ class CampaignDeviceStatsStream(StackadaptStream):
                 except Exception as e:
                     self.logger.warning(f"Error fetching stats for campaign {campaign_id}: {e}")
                     continue
-            
-            # Move to next chunk
-            current_date = chunk_end_date + timedelta(days=1)
 
     def post_process(
         self,
@@ -696,11 +693,17 @@ class CampaignConversionTrackerDeliveryStatsStream(StackadaptStream):
         
         end_date = datetime.now().replace(tzinfo=None)
         
-        # Generate date chunks
-        current_date = start_date
-        while current_date <= end_date:
-            chunk_end_date = min(current_date + timedelta(days=chunk_days - 1), end_date)
-            
+        def iter_date_ranges():
+            if chunk_days and chunk_days > 0:
+                current = start_date
+                while current <= end_date:
+                    chunk_end = min(current + timedelta(days=chunk_days - 1), end_date)
+                    yield current, chunk_end
+                    current = chunk_end + timedelta(days=1)
+            else:
+                yield start_date, end_date
+        
+        for current_date, chunk_end_date in iter_date_ranges():
             # For each campaign, fetch delivery stats for this date range
             for campaign in campaigns_stream.get_records(context):
                 campaign_id = campaign.get("id")
@@ -723,8 +726,8 @@ class CampaignConversionTrackerDeliveryStatsStream(StackadaptStream):
                     campaign_context = {
                         "campaign_id": campaign_id,
                         "conversion_tracker_id": tracker_id,
-                        "start_date": range_start.strftime("%Y-%m-%d"),
-                        "end_date": range_end.strftime("%Y-%m-%d"),
+                        "start_date": current_date.strftime("%Y-%m-%d"),
+                        "end_date": chunk_end_date.strftime("%Y-%m-%d"),
                     }
                     
                     # Fetch delivery stats for this campaign, tracker, and date range with pagination
@@ -800,7 +803,7 @@ class CampaignConversionTrackerDeliveryStatsStream(StackadaptStream):
                         except Exception as e:
                             self.logger.warning(f"Error fetching delivery stats for campaign {campaign_id} tracker {tracker_id} page {page}: {e}")
                             break
-            
+        
         # No explicit return needed; generator completes after ranges processed
 
     def post_process(
