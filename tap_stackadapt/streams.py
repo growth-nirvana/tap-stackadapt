@@ -47,6 +47,7 @@ class CampaignsStream(StackadaptStream):
     schema = th.PropertiesList(
         th.Property("id", th.IntegerType, description="Campaign ID"),
         th.Property("advertiser_id", th.IntegerType, description="Advertiser ID"),
+        th.Property("budget", th.NumberType, description="Campaign budget"),
         th.Property("name", th.StringType, description="Campaign name"),
         th.Property("status", th.ObjectType(
             th.Property("code", th.StringType, description="Status code"),
